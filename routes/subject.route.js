@@ -6,22 +6,22 @@ const subjectRoute = Router();
 // CREATE: เพิ่มรายวิชา
 subjectRoute.post("/create-subject", async (req, res) => {
   try {
-    const { course_id, course_name, teacher_name } = req.body;
+    const { course_id, course_name, teacher_name, time_check } = req.body;
 
-    // ตรวจสอบข้อมูล
-    if (!course_id || !course_name || !teacher_name) {
+    if (!course_id || !course_name || !teacher_name || !time_check) {
       return res.status(400).json({
         error: "กรุณากรอกข้อมูลให้ครบทุกช่อง",
       });
     }
 
-    const query = `INSERT INTO courses (course_id, course_name, teacher_name) 
-                   VALUES ($1, $2, $3) RETURNING *`;
+    const query = `INSERT INTO courses (course_id, course_name, teacher_name, time_check) 
+                   VALUES ($1, $2, $3, $4) RETURNING *`;
 
     const result = await pool.query(query, [
       course_id,
       course_name,
       teacher_name,
+      time_check,
     ]);
 
     res.status(201).json({
@@ -30,16 +30,8 @@ subjectRoute.post("/create-subject", async (req, res) => {
     });
   } catch (error) {
     console.error(error);
-
-    // จัดการ error duplicate key
-    if (error.code === "23505") {
-      return res.status(400).json({
-        error: "รหัสวิชานี้มีอยู่แล้ว",
-      });
-    }
-
     res.status(500).json({
-      error: "เกิดข้อผิดพลาดในการเพิ่มข้อมูล",
+      error: "เกิดข้อผิดพลาดในการเพิ่มรายวิชา",
     });
   }
 });
@@ -67,7 +59,6 @@ subjectRoute.get("/get-all-subjects", async (req, res) => {
 subjectRoute.get("/get-subject/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    console.log("🚀 ~ id:", id);
     const query = `SELECT * FROM courses WHERE course_id = $1`;
     const result = await pool.query(query, [id]);
 
@@ -89,25 +80,24 @@ subjectRoute.get("/get-subject/:id", async (req, res) => {
   }
 });
 
-// UPDATE: แก้ไขข้อมูล
+// UPDATE: แก้ไขข้อมูล ✅ เพิ่ม time_check
 subjectRoute.put("/update-subject/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const { course_name, teacher_name } = req.body;
+    const { course_name, teacher_name, time_check } = req.body; // ✅ เพิ่ม time_check
 
-    // ตรวจสอบข้อมูล
-    if (!course_name || !teacher_name) {
+    if (!course_name || !teacher_name || !time_check) { // ✅ validate time_check
       return res.status(400).json({
         error: "กรุณากรอกข้อมูลให้ครบทุกช่อง",
       });
     }
 
     const query = `UPDATE courses 
-                   SET course_name = $1, teacher_name = $2 
-                   WHERE course_id = $3 
-                   RETURNING *`;
+                   SET course_name = $1, teacher_name = $2, time_check = $3
+                   WHERE course_id = $4 
+                   RETURNING *`; // ✅ เพิ่ม time_check = $3
 
-    const result = await pool.query(query, [course_name, teacher_name, id]);
+    const result = await pool.query(query, [course_name, teacher_name, time_check, id]);
 
     if (result.rows.length === 0) {
       return res.status(404).json({
@@ -152,53 +142,52 @@ subjectRoute.delete("/delete-subject/:id", async (req, res) => {
   }
 });
 
+// GET CLASS DETAIL
 subjectRoute.get("/get-class-detail/:classId/:stdId", async (req, res) => {
   try {
     const { classId, stdId } = req.params;
-    const queryData = `SELECT
-  s.student_id,
-  s.fullname,
-  s.major,
-  s.username,
-  s.std_class_id,
-
-  c.course_id,
-  c.course_name,
-  c.teacher_name,
-
-  a.checkin_time,
-  a.status
-FROM attendance a
-JOIN students s
-  ON a.student_id = s.student_id
-JOIN courses c
-  ON a.course_id = c.course_id
-WHERE s.student_id = $1
-  AND c.course_id = $2
-`;
+    const queryData = `
+      SELECT
+        s.student_id,
+        s.fullname,
+        s.major,
+        s.username,
+        s.std_class_id,
+        c.course_id,
+        c.course_name,
+        c.teacher_name,
+        a.checkin_time,
+        a.status
+      FROM attendance a
+      JOIN students s ON a.student_id = s.student_id
+      JOIN courses c ON a.course_id = c.course_id
+      WHERE s.student_id = $1
+        AND c.course_id = $2
+    `;
 
     const data = await pool.query(queryData, [stdId, classId]);
-    console.log("🚀 ~ data:", data);
 
-    const statisticQuery = `SELECT
-  COUNT(*) AS total,
-
-  COUNT(*) FILTER (WHERE status = 'มาเรียน') AS present,
-  COUNT(*) FILTER (WHERE status = 'มาสาย')    AS late,
-  COUNT(*) FILTER (WHERE status = 'ขาด')  AS absent,
-  COUNT(*) FILTER (WHERE status = 'ลา')   AS leave
-FROM attendance
-WHERE student_id = $1
-  AND course_id = $2;
-`;
+    const statisticQuery = `
+      SELECT
+        COUNT(*) AS total,
+        COUNT(*) FILTER (WHERE status = 'มาเรียน') AS present,
+        COUNT(*) FILTER (WHERE status = 'มาสาย')   AS late,
+        COUNT(*) FILTER (WHERE status = 'ขาด')     AS absent,
+        COUNT(*) FILTER (WHERE status = 'ลา')      AS leave
+      FROM attendance
+      WHERE student_id = $1
+        AND course_id = $2
+    `;
 
     const statistics = await pool.query(statisticQuery, [stdId, classId]);
-    return res
-      .status(200)
-      .json({ data: data.rows, statistics: statistics.rows });
+
+    return res.status(200).json({
+      data: data.rows,
+      statistics: statistics.rows,
+    });
   } catch (error) {
     console.error(error);
-    res.status(500).json({ err: "error" });
+    res.status(500).json({ error: "เกิดข้อผิดพลาดในการดึงข้อมูล" });
   }
 });
 
