@@ -5,33 +5,39 @@ const stdRoute = Router();
 
 stdRoute.post("/create-std", async (req, res) => {
   try {
-    const { fullName, studentId, username, password } = req.body;
-    if (!fullName || !studentId || !username || !password)
-      return res.status(400);
+    // 1. รับค่าตามชื่อตัวแปรที่ Frontend ตัวใหม่ส่งมา
+    const { fullname, std_class_id, username, password, profile, major } = req.body;
+    
+    if (!fullname || !std_class_id || !username || !password)
+      return res.status(400).json({ err: "กรุณากรอกข้อมูลให้ครบถ้วน" });
 
+    // 2. ค้นหาว่ามี username หรือ รหัสนักเรียน ซ้ำไหม
     const where = `select * from students where username = $1 or std_class_id = $2`;
-    const fintExitStd = await pool.query(where, [username, studentId]);
+    const fintExitStd = await pool.query(where, [username, std_class_id]);
     if (fintExitStd.rows.length > 0)
       return res.json({
         err: "มีข้อมูลรหัสนักศึกษานี้หรือ username นี้อยู่แล้ว",
       });
 
-    const query = `INSERT INTO students (fullname,std_class_id,username,password,major) 
-                   VALUES ($1, $2, $3, $4, $5) RETURNING *`;
+    // 3. เพิ่มคอลัมน์ profile และ major เข้าไปในคำสั่ง INSERT 
+    const query = `INSERT INTO students (fullname, std_class_id, username, password, major, profile) 
+                   VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`;
 
     const result = await pool.query(query, [
-      fullName,
-      studentId,
+      fullname,
+      std_class_id,
       username,
       password,
-      "IT",
+      major || "IT", // ถ้าหน้าเว็บไม่ได้ส่ง major มา ให้ตั้งค่าเริ่มต้นเป็น "IT"
+      profile || "default_profile.png", // ใส่รูปโปรไฟล์เริ่มต้น (สำคัญมาก ป้องกัน Error NOT NULL)
     ]);
-    if (!result) return res.status(400);
+    
+    if (!result.rows.length) return res.status(400).json({ err: "สมัครสมาชิกไม่สำเร็จ" });
 
-    return res.status(200).json({ ok: true });
+    return res.status(200).json({ ok: true, message: "สมัครสมาชิกสำเร็จ" });
   } catch (error) {
     console.log(error);
-    res.status(500).json(error);
+    res.status(500).json({ err: "เกิดข้อผิดพลาดจากเซิร์ฟเวอร์" });
   }
 });
 
@@ -248,37 +254,33 @@ stdRoute.post("/check-class", upload.single("leavDoc"), async (req, res) => {
     
     if (duplicateResult.rows.length > 0) {
       return res.status(400).json({ 
-        err: "คุณเช็คชื่อวันนี้ไปแล้ว ไม่สามารถเช็คชื่อซ้ำได้",
-        alreadyChecked: true,
-        previousStatus: duplicateResult.rows[0].status,
-        checkinTime: duplicateResult.rows[0].checkin_time
+        err: `คุณเช็คชื่อวันนี้ไปแล้ว (สถานะ: ${duplicateResult.rows[0].status}) ไม่สามารถเช็คชื่อซ้ำได้`,
+        alreadyChecked: true
       });
     }
 
-    // 2. ตรวจสอบเวลา (ถ้าต้องการจำกัดเวลาเช็คชื่อ)
-    const currentHour = new Date().getHours();
-    const currentMinute = new Date().getMinutes();
-    
-    // ตัวอย่าง: ให้เช็คชื่อได้แค่ 08:00 - 18:00
+    // 2. ตรวจสอบเวลา 
+    // ⚠️ ปิดการเช็คเวลาชั่วคราวเพื่อให้เทสระบบได้ตลอดเวลา
+    /* const currentHour = new Date().getHours();
     if (currentHour < 8 || currentHour >= 18) {
       return res.status(400).json({ 
-        err: "ไม่อยู่ในช่วงเวลาเช็คชื่อ (08:00 - 18:00)",
-        outsideTime: true
+        err: "ไม่อยู่ในช่วงเวลาเช็คชื่อ (08:00 - 18:00)"
       });
     }
+    */
 
     // 3. บันทึกการเช็คชื่อ
     const insertQuery = `
       INSERT INTO attendance
       (course_id, student_id, checkin_time, status, leave_file)
-      VALUES ($1, $2, $3, $4, $5)
+      VALUES ($1, $2, CURRENT_TIMESTAMP, $3, $4)
       RETURNING *
     `;
 
+    // ใช้ CURRENT_TIMESTAMP ของฐานข้อมูลแทน new Date() ของ JS เพื่อความแม่นยำ
     const result = await pool.query(insertQuery, [
       classId, 
       stdId, 
-      new Date(), 
       status, 
       filePath
     ]);
@@ -295,7 +297,7 @@ stdRoute.post("/check-class", upload.single("leavDoc"), async (req, res) => {
     // ตรวจสอบ error ประเภทต่างๆ
     if (err.code === '23503') {
       return res.status(400).json({ 
-        err: "ไม่พบข้อมูลนักศึกษาหรือรายวิชา" 
+        err: "ไม่พบข้อมูลนักศึกษาหรือรายวิชาในระบบ (ข้อมูลอาจถูกลบไปแล้ว)" 
       });
     }
     
